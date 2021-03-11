@@ -69,55 +69,56 @@ struct Triangle {
     Triangle(const vec3 a_, const vec3 b_, const vec3 c_)
     : a(a_), b(b_), c(c_) {
         //TODO compute normals
-
+        vec3 n = cross(b - a, c - a);
+        na = nb = nc = n.normalized();
     };
 
     Triangle(const vec3 a_, const vec3 b_, const vec3 c_,
              const vec3 na_, const vec3 nb_, const vec3 nc_)
     : a(a_), b(b_), c(c_), na(na_), nb(nb_), nc(nc_) {};
 
+
+    float intersect(Ray & ray, bool cullback,  float & b1, float & b2)
+    {
+        vec3 e1(b - a), e2(c - a);
+        vec3 pvec = cross(ray.dir, e2);
+        float det = dot(e1, pvec);
+
+        if (cullback)
+        {
+            if (det < epsilon) // ray is parallel to triangle
+                return INFINITY;
+        }
+        else
+        {
+            if (fabs(det) < epsilon) // ray is parallel to triangle
+                return INFINITY;
+        }
+
+        float invDet = 1.0f / det;
+
+        // Compute first barycentric coordinate
+        vec3 tvec = ray.origin - a;
+        b1 = dot(tvec, pvec) * invDet;
+
+        if (b1 < 0.0f || b1 > 1.0f)
+            return INFINITY;
+
+        // Compute second barycentric coordinate
+        vec3 qvec = cross(tvec, e1);
+        b2 = dot(ray.dir, qvec) * invDet;
+
+        if (b2 < 0.0f || b1 + b2 > 1.0f)
+            return INFINITY;
+
+        // Compute t to intersection point
+        float t = dot(e2, qvec) * invDet;
+        return t;
+    }
+
     vec3 a, b, c;
     vec3 na, nb, nc;
 };
-
-/*struct Sphere { 
-    Sphere(double rad_, vec3 p_): 
-        rad(rad_), p(p_) {} 
-   
-    double intersect(const Ray &r) const { // returns distance, 0 if nohit 
-        vec3 op = p - r.origin; // Solve t^2*d.d + 2*t*(o-p).d + (o-p).(o-p)-R^2 = 0 
-        double t, eps=1e-4, b=dot(op, r.dir), det=b*b-dot(op,op)+rad*rad; 
-        
-        if (det<0) 
-          return INFINITY; 
-        else det=sqrt(det); 
-
-        return (t=b-det)>eps ? t : ((t=b+det)>eps ? t : INFINITY); 
-    } 
-
-    double rad;  // radius 
-    vec3 p;     // position
-}; 
-
-const Sphere * findNearest(Ray & r, const vector<Sphere> & scene) {
-
-  const Sphere * nearest = nullptr;
-  double d = INFINITY, di;
-
-  for (size_t i = 0; i < scene.size(); i++)
-  {
-    di = scene[i].intersect(r);
-
-    if (di != INFINITY && di < d)
-    {
-      nearest = &scene[i];
-      d = di;
-    }
-  }
-  
-  r.t = d;
-  return nearest;
-}*/
 
 struct Camera
 {
@@ -218,6 +219,27 @@ public:
         }
     }
 
+    Triangle * findNearest(Ray & ray) {
+        Triangle * nearest = nullptr;
+        double tmin = INFINITY, t = INFINITY;
+        float b1, b2;
+
+
+        for (size_t i = 0; i < triangles.size(); i++)
+        {
+            t = triangles[i]->intersect(ray, true, b1, b2);
+
+            if (t != INFINITY && t < tmin)
+            {
+                nearest = triangles[i];
+                tmin = t;
+            }
+        }
+        
+        ray.t = tmin;
+        return nearest;
+    }
+
     ~Scene()
     {
         for (size_t i = 0; i < triangles.size(); ++i)
@@ -246,19 +268,8 @@ int main(int argc, char const *argv[])
 {
     float *image = new float[WIDTH * HEIGHT * 3];
 
-    //creating checker texture
-    /*for(int i = 0; i < WIDTH; ++i)
-        for(int j = 0; j < HEIGHT; ++j)
-            for(int k = 0; k < 3; ++k)
-                image[3 * (j * WIDTH + i) + k] = (i + j) % 2 * 255;*/
-
-    Camera camera(vec3(0), vec3(0, 0, 1), vec3(0, 1, 0), 1.0);
-
-    /*vector<Sphere> scene;
-    scene.push_back(Sphere(2, vec3(0, 10, 0)));
-    scene.push_back(Sphere(3.5, vec3(-5, 15, 0)));
-    scene.push_back(Sphere(5, vec3(5, 20, 0)));
-    scene.push_back(Sphere(10e5, vec3(0, 0, -10e5 - 5)));*/
+    Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
+    Scene scene("./scenes", "./scenes/CornellBox-Original.obj");
 
     for (int j = 0; j < HEIGHT; ++j)
         for (int i = 0; i < WIDTH; ++i)
@@ -268,16 +279,16 @@ int main(int argc, char const *argv[])
             //vrhni paprsek co sceny
             //otestuj prusek s kazdou sferou
             //vezmi nejblizsi pokud existuje
-            /*const Sphere * sphere = findNearest(r, scene);
+            const Triangle * tri = scene.findNearest(r);
 
             //do obrazku zapis hloubku
-            if (sphere != nullptr) {
+            if (tri != nullptr) {
             for(int k = 0; k < 3; ++k)
-                image[(j * WIDTH + i) * 3 + k] = 255;//clamp(r.t, 0.0, 255.0);
-            }*/
+                image[(j * WIDTH + i) * 3 + k] = clamp(r.t / 20.0, 0.0, 255.0);
+            }
         }
 
     //image saving
-    //saveImage(image, WIDTH, HEIGHT);
+    saveImage(image, WIDTH, HEIGHT);
     delete [] image;
 }
