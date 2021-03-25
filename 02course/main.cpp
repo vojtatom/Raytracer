@@ -252,6 +252,7 @@ private:
     vector<Triangle *> triangles;
 };
 
+
 void saveImage(float *image, size_t width, size_t height)
 {
     //image saving
@@ -264,12 +265,16 @@ void saveImage(float *image, size_t width, size_t height)
     output.close();
 }
 
+
 int main(int argc, char const *argv[])
 {
     float *image = new float[WIDTH * HEIGHT * 3];
 
-    Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
-    Scene scene("./scenes", "./scenes/CornellBox-Original.obj");
+    //Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
+    Camera camera(vec3(0, 1, 4.42), vec3(0, 1, 0), vec3(0, 0, -1), 0.6);
+    Scene scene("./scenes", "./scenes/CornellBox-Sphere.obj");
+
+    double maxt = 0;
 
     for (int j = 0; j < HEIGHT; ++j)
         for (int i = 0; i < WIDTH; ++i)
@@ -283,8 +288,10 @@ int main(int argc, char const *argv[])
 
             //do obrazku zapis hloubku
             if (tri != nullptr) {
+                maxt = max(maxt, r.t);
+
             for(int k = 0; k < 3; ++k)
-                image[(j * WIDTH + i) * 3 + k] = clamp(r.t / 20.0, 0.0, 255.0);
+                image[(j * WIDTH + i) * 3 + k] = clamp(r.t * 255.0 / maxt, 0.0, 255.0);
             }
         }
 
