@@ -2,16 +2,18 @@
 #include <fstream>
 #include <cmath>
 #include <vector>
+#include <random>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "objloader.hpp"
 
-#define WIDTH 800
-#define HEIGHT 800
+#define WIDTH 400
+#define HEIGHT 400
+#define LIGHTSAMPLES 2
 
 using namespace std;
 
-const double epsilon = 1e-9; // Small value
+const double epsilon = 1e-5; // Small value
 
 struct vec3
 {
@@ -28,6 +30,7 @@ struct vec3
     void operator+=(const vec3 &v) { x += v.x, y += v.y, z += v.z; }
     void operator*=(double a) { x *= a, y *= a, z *= a; }
     void operator*=(const vec3 &v) { x *= v.x, y *= v.y, z *= v.z; }
+    void operator/=(const int i) { x /= i, y /= i, z /= i; }
     double operator[](const size_t i) {return ((double*)this)[i]; }
     double length() const { return sqrt(x * x + y * y + z * z); }
     double average() { return (x + y + z) / 3; }
@@ -62,34 +65,54 @@ inline T clamp(T val, T low, T high)
 struct Ray
 {
     Ray(vec3 o, vec3 d)
-        : origin(o), dir(d){};
+        : origin(o), dir(d), b1(0), b2(0) {};
     vec3 origin, dir;
+    float b1, b2;
     double t;
 };
 
 struct Material {
-    vec3 Kd;
-    vec3 Ks;
-    vec3 Ke;
-    vec3 T;
-    double ior;
+    vec3 Kd; //diffuse
+    vec3 Ks; //specular
+    vec3 Ke; //emission
+    vec3 T; //transmittance
+    double ior; //index of refraction
     double h; //shinines
+
+    vec3 phongSimple(const vec3 & x, const vec3 & lightPosition, const vec3 & viewerPosition, const vec3 & normal) 
+    {
+        vec3 lightDirection = (lightPosition - x).normalized();
+        vec3 viewerDirection = (viewerPosition - x).normalized();
+        vec3 idealReflectedDirection =  normal * 2 * dot(lightDirection, normal) - lightDirection;
+       
+        vec3 diffuse = Kd * dot(lightDirection, normal);
+        vec3 specular = Ks * pow(clamp(dot(viewerDirection, idealReflectedDirection), 0.0, 1.0), h);
+
+        return diffuse + specular; 
+    }
 };
 
 struct Triangle {
     Triangle(const vec3 a_, const vec3 b_, const vec3 c_, Material * mat_)
-    : a(a_), b(b_), c(c_), mat(mat_) {
+    : a(a_), b(b_), c(c_), mat(mat_) 
+    {
         //TODO compute normals
         vec3 n = cross(b - a, c - a);
         na = nb = nc = n.normalized();
+        edgeAB = b - a;
+        edgeAC = c - a;
     };
 
     Triangle(const vec3 a_, const vec3 b_, const vec3 c_,
              const vec3 na_, const vec3 nb_, const vec3 nc_, Material * mat_)
-    : a(a_), b(b_), c(c_), na(na_), nb(nb_), nc(nc_), mat(mat_) {};
+    : a(a_), b(b_), c(c_), na(na_), nb(nb_), nc(nc_), mat(mat_) 
+    {
+        edgeAB = b - a;
+        edgeAC = c - a;
+    };
 
 
-    float intersect(Ray & ray, bool cullback,  float & b1, float & b2)
+    float intersect(const Ray & ray, bool cullback, float & b1, float & b2)
     {
         vec3 e1(b - a), e2(c - a);
         vec3 pvec = cross(ray.dir, e2);
@@ -127,8 +150,37 @@ struct Triangle {
         return t;
     }
 
+    vec3 normal(const float b1, const float b2) const
+    {
+        return (na * (1 - b1 - b2) + nb * b1 + nc * b2).normalized();
+    }
+
+    void samplePoint(vec3 & sampleP, vec3 & sampleN) const {
+        float u = ((float) rand()) / RAND_MAX;
+        float v = ((float) rand()) / RAND_MAX;
+
+        if (u + v > 1) {
+            u = 1 - u;
+            v = 1 - v;
+        }
+
+        sampleP = a + edgeAB * u + edgeAC * v;
+        sampleN = normal(u, v);
+    }
+
+    double emissionWeight(const vec3 & lightPoint, const vec3 & lightNormal, const vec3 & x) 
+    {
+        double area = 0.5 * cross(edgeAB, edgeAC).length();
+        vec3 shadowRayDirection = (x - lightPoint);
+        double lightDistance = shadowRayDirection.length();
+
+        return (area * dot(lightNormal, shadowRayDirection.normalized())) / (lightDistance * lightDistance); 
+    }
+
+
     vec3 a, b, c;
     vec3 na, nb, nc;
+    vec3 edgeAB, edgeAC;
     Material * mat;
 };
 
@@ -246,24 +298,25 @@ public:
         }
     };
 
-    Triangle * findNearest(Ray & ray) {
+    Triangle * findNearest(Ray & ray, bool cullback) {
         Triangle * nearest = nullptr;
-        double tmin = INFINITY, t = INFINITY;
+        ray.t = INFINITY;
+        double t = INFINITY;
         float b1, b2;
-
 
         for (size_t i = 0; i < triangles.size(); i++)
         {
-            t = triangles[i]->intersect(ray, true, b1, b2);
+            t = triangles[i]->intersect(ray, cullback, b1, b2);
 
-            if (t != INFINITY && t < tmin)
+            if ((t != INFINITY && t < ray.t) && t > epsilon)
             {
                 nearest = triangles[i];
-                tmin = t;
+                ray.t = t;
+                ray.b1 = b1;
+                ray.b2 = b2;
             }
         }
-        
-        ray.t = tmin;
+
         return nearest;
     };
 
@@ -280,28 +333,62 @@ public:
         }
     };
 
-    vec3 trace(Ray ray, bool backface) { 
-        vec3 color(0.0);
-        const Triangle * tri = findNearest(ray);
-        const vec3 x = ray.origin + ray.dir * ray.t;
-
-        if (!tri){
-            return color;
-        }
-
-        //zjistit co na me sviti
+    vec3 calculatePointLightLocation() {
+        vec3 location;
         for (size_t i = 0; i < lights.size(); i++)
         {
-            //vygeneruj pozici na trojuhelniku (aproximace bodovym osvetlenim)
-            //zjisti jestli vidis svetlo z x
-            //pokud ano, vyhodnot phonga
+            location += lights[i]->a;
+            location += lights[i]->b;
+            location += lights[i]->c;
+        }
+        
+        location /= lights.size() * 3;
+        return location;
+    }
+
+    bool ocluded(const vec3 & source, const vec3 & dest) {
+        vec3 dir = dest - source;
+        double dist = (dir).length();
+
+        Ray ray(source, dir.normalized());
+        Triangle * tri = findNearest(ray, false);
+
+        if (!tri)
+            return false;
+
+        if(ray.t < (dist - epsilon))
+            return true;
+        return false;
+
+    }
+
+    vec3 trace(Ray ray, bool backface) { 
+        vec3 color(0.0);
+        const Triangle * tri = findNearest(ray, true);
+        
+        //prusecik
+        const vec3 x = ray.origin + ray.dir * ray.t;
+
+        if (!tri)
+            return color;
+
+        vec3 lightPosition, lightNormal;
+        for (size_t i = 0; i < lights.size(); i++)
+        {
+            for (size_t j = 0; j < LIGHTSAMPLES; j++)
+            {
+                lights[i]->samplePoint(lightPosition, lightNormal);
+                if(!ocluded(x, lightPosition))
+                {
+                    color += tri->mat->phongSimple(x, lightPosition, ray.origin, tri->normal(ray.b1, ray.b2)); 
+                             //*lights[i]->emissionWeight(lightPosition, lightNormal, x);
+                }
+            }
         }
 
-        //TODO next course zanor se hloubeji pokud spec > 0
-        //TODO next course zanor se kvuli lomenym paprskum
-
-
-        return color;
+        color += tri->mat->Ke;
+        float lightFactor = 1.0 / (lights.size() * LIGHTSAMPLES);
+        return color * lightFactor;
     };
 
 
@@ -330,7 +417,10 @@ int main(int argc, char const *argv[])
 {
     float *image = new float[WIDTH * HEIGHT * 3];
 
+
+    //Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
     Camera camera(vec3(0, 1, 4.42), vec3(0, 1, 0), vec3(0, 0, -1), 0.6);
+    //Scene scene("./scenes", "./scenes/CornellBox-Original.obj");
     Scene scene("./scenes", "./scenes/CornellBox-Sphere.obj");
 
     double maxt = 0;
@@ -343,9 +433,18 @@ int main(int argc, char const *argv[])
             vec3 color = scene.trace(r, false);
 
             for(int k = 0; k < 3; ++k)
-                image[(j * WIDTH + i) * 3 + k] = color[k];
+                image[(j * WIDTH + i) * 3 + k] = clamp(color[k] * 255, 0.0, 255.0);
             
         }
+
+    /*int i = 67;
+    int j = 173;
+    Ray r = camera.primaryRayForPixel(i, j);
+
+    vec3 color = scene.trace(r, false);
+
+    for(int k = 0; k < 3; ++k)
+        image[(j * WIDTH + i) * 3 + k] = color[k] * 255;*/
 
     //image saving
     saveImage(image, WIDTH, HEIGHT);
