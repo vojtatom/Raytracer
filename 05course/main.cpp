@@ -9,11 +9,12 @@
 
 #define WIDTH 400
 #define HEIGHT 400
-#define LIGHTSAMPLES 2
+#define LIGHTSAMPLES 32
 
 using namespace std;
 
-const double epsilon = 1e-5; // Small value
+//const double epsilon = 1e-5; // Small value
+const double epsilon = 1e-1; // Small value
 
 struct vec3
 {
@@ -83,9 +84,10 @@ struct Material {
     {
         vec3 lightDirection = (lightPosition - x).normalized();
         vec3 viewerDirection = (viewerPosition - x).normalized();
-        vec3 idealReflectedDirection =  normal * 2 * dot(lightDirection, normal) - lightDirection;
+        double lightNormalDot = clamp(dot(lightDirection, normal), 0.0, 1.0);
+        vec3 idealReflectedDirection =  normal * 2 * lightNormalDot - lightDirection;
        
-        vec3 diffuse = Kd * dot(lightDirection, normal);
+        vec3 diffuse = Kd * lightNormalDot;
         vec3 specular = Ks * pow(clamp(dot(viewerDirection, idealReflectedDirection), 0.0, 1.0), h);
 
         return diffuse + specular; 
@@ -112,20 +114,22 @@ struct Triangle {
     };
 
 
-    float intersect(const Ray & ray, bool cullback, float & b1, float & b2)
+    float intersect(const Ray & ray, bool inside, float & b1, float & b2)
     {
         vec3 e1(b - a), e2(c - a);
         vec3 pvec = cross(ray.dir, e2);
         float det = dot(e1, pvec);
 
-        if (cullback)
+        if (inside)
         {
-            if (det < epsilon) // ray is parallel to triangle
+            //do not cull backface
+            if (fabs(det) < epsilon) // ray is parallel to triangle
                 return INFINITY;
         }
         else
         {
-            if (fabs(det) < epsilon) // ray is parallel to triangle
+            //cull backface
+            if (det < epsilon) // ray is parallel to triangle
                 return INFINITY;
         }
 
@@ -174,7 +178,7 @@ struct Triangle {
         vec3 shadowRayDirection = (x - lightPoint);
         double lightDistance = shadowRayDirection.length();
 
-        return (area * dot(lightNormal, shadowRayDirection.normalized())) / (lightDistance * lightDistance); 
+        return (area * clamp(dot(lightNormal, shadowRayDirection.normalized()), 0.0 , 1.0)) / (LIGHTSAMPLES * lightDistance * lightDistance); 
     }
 
 
@@ -298,7 +302,7 @@ public:
         }
     };
 
-    Triangle * findNearest(Ray & ray, bool cullback) {
+    Triangle * findNearest(Ray & ray, bool inside) {
         Triangle * nearest = nullptr;
         ray.t = INFINITY;
         double t = INFINITY;
@@ -306,7 +310,7 @@ public:
 
         for (size_t i = 0; i < triangles.size(); i++)
         {
-            t = triangles[i]->intersect(ray, cullback, b1, b2);
+            t = triangles[i]->intersect(ray, inside, b1, b2);
 
             if ((t != INFINITY && t < ray.t) && t > epsilon)
             {
@@ -362,9 +366,9 @@ public:
 
     }
 
-    vec3 trace(Ray ray, bool backface) { 
+    vec3 trace(Ray ray, bool inside) { 
         vec3 color(0.0);
-        const Triangle * tri = findNearest(ray, true);
+        const Triangle * tri = findNearest(ray, inside);
         
         //prusecik
         const vec3 x = ray.origin + ray.dir * ray.t;
@@ -372,7 +376,9 @@ public:
         if (!tri)
             return color;
 
+        vec3 normal = tri->normal(ray.b1, ray.b2); 
         vec3 lightPosition, lightNormal;
+
         for (size_t i = 0; i < lights.size(); i++)
         {
             for (size_t j = 0; j < LIGHTSAMPLES; j++)
@@ -380,15 +386,54 @@ public:
                 lights[i]->samplePoint(lightPosition, lightNormal);
                 if(!ocluded(x, lightPosition))
                 {
-                    color += tri->mat->phongSimple(x, lightPosition, ray.origin, tri->normal(ray.b1, ray.b2)); 
-                             //*lights[i]->emissionWeight(lightPosition, lightNormal, x);
+                    color += lights[i]->mat->Ke
+                             * tri->mat->phongSimple(x, lightPosition, ray.origin, normal)
+                             * lights[i]->emissionWeight(lightPosition, lightNormal, x);
                 }
             }
         }
 
+        /*float lightFactor = 1.0 / (lights.size());
+        color *= lightFactor;*/
+
+        //odrazene paprsky
+        if (tri->mat->Ks.average() > 0) {
+            //spoleham na to ze ray.dir je normalizovany
+            vec3 idealReflectedDirection =  normal * 2 * dot(-ray.dir, normal) + ray.dir;
+            Ray reflected(x, idealReflectedDirection.normalized());
+            vec3 reflectedColor = trace(reflected, inside);
+            color += reflectedColor * tri->mat->Ks;
+        }
+
+        //lomene paprsky
+        if (tri->mat->T.average() > 0) {
+
+            double ior = tri->mat->ior;
+            
+            if (inside) {
+                ior = 1.0 / ior;
+                normal = -normal;
+            }
+
+            vec3 view = -ray.dir;
+            double vnDot = dot(view, normal);
+
+            double termSqrt = 1 - (ior * ior) * (1 - vnDot * vnDot);
+            
+            if (termSqrt > 0) {
+                double normalFactor =  ior * vnDot - sqrt(termSqrt);
+                vec3 refractedDirection = view * (-ior) + normal * normalFactor;
+                Ray refracted(x, refractedDirection.normalized());
+                vec3 refractedColor = trace(refracted, !inside);
+                color += refractedColor * tri->mat->T;
+            } else {
+                //TODO total reflection
+            }
+        }
+
         color += tri->mat->Ke;
-        float lightFactor = 1.0 / (lights.size() * LIGHTSAMPLES);
-        return color * lightFactor;
+        return color;
+
     };
 
 
@@ -418,10 +463,10 @@ int main(int argc, char const *argv[])
     float *image = new float[WIDTH * HEIGHT * 3];
 
 
-    //Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
-    Camera camera(vec3(0, 1, 4.42), vec3(0, 1, 0), vec3(0, 0, -1), 0.6);
-    //Scene scene("./scenes", "./scenes/CornellBox-Original.obj");
-    Scene scene("./scenes", "./scenes/CornellBox-Sphere.obj");
+    Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
+    //Camera camera(vec3(0, 1, 4.42), vec3(0, 1, 0), vec3(0, 0, -1), 0.6);
+    Scene scene("./scenes", "./scenes/CornellBox-Original.obj");
+    //Scene scene("./scenes", "./scenes/CornellBox-Sphere.obj");
 
     double maxt = 0;
 
@@ -429,22 +474,13 @@ int main(int argc, char const *argv[])
         for (int i = 0; i < WIDTH; ++i)
         {
             Ray r = camera.primaryRayForPixel(i, j);
-
             vec3 color = scene.trace(r, false);
+            cout << "\rrendering " << (double)((j * WIDTH) + i) * 100 / (WIDTH * HEIGHT) << "%" << flush;
 
             for(int k = 0; k < 3; ++k)
                 image[(j * WIDTH + i) * 3 + k] = clamp(color[k] * 255, 0.0, 255.0);
             
         }
-
-    /*int i = 67;
-    int j = 173;
-    Ray r = camera.primaryRayForPixel(i, j);
-
-    vec3 color = scene.trace(r, false);
-
-    for(int k = 0; k < 3; ++k)
-        image[(j * WIDTH + i) * 3 + k] = color[k] * 255;*/
 
     //image saving
     saveImage(image, WIDTH, HEIGHT);
