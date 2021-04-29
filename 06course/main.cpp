@@ -9,7 +9,7 @@
 
 #define WIDTH 400
 #define HEIGHT 400
-#define LIGHTSAMPLES 32
+#define LIGHTSAMPLES 2
 
 using namespace std;
 
@@ -32,13 +32,18 @@ struct vec3
     void operator*=(double a) { x *= a, y *= a, z *= a; }
     void operator*=(const vec3 &v) { x *= v.x, y *= v.y, z *= v.z; }
     void operator/=(const int i) { x /= i, y /= i, z /= i; }
-    double operator[](const size_t i) {return ((double*)this)[i]; }
+    double & operator[](const size_t i) {return ((double*)this)[i]; }
+    double operator[](const size_t i) const {return ((double*)this)[i]; }
     double length() const { return sqrt(x * x + y * y + z * z); }
     double average() { return (x + y + z) / 3; }
     vec3 normalized() const { return (*this) / length(); }
 
     double x, y, z;
 };
+
+vec3 operator/(double a, const vec3 & vec) {
+    return vec3(a / vec.x, a / vec.y, a / vec.z);
+}
 
 double
 dot(const vec3 &v1, const vec3 &v2)
@@ -302,7 +307,7 @@ public:
         }
     };
 
-    Triangle * findNearest(Ray & ray, bool inside) {
+    virtual Triangle * findNearest(Ray & ray, bool inside) {
         Triangle * nearest = nullptr;
         ray.t = INFINITY;
         double t = INFINITY;
@@ -438,11 +443,354 @@ public:
 
 
 
-private:
+protected:
     vector<Triangle *> triangles;
     vector<Triangle *> lights;
     vector<Material *> materials;
 };
+
+
+size_t boxid = 0;
+struct BBox{
+    BBox() : low(INFINITY), high(-INFINITY), id(boxid++) {};
+
+    void reset()
+    {
+        low = vec3(INFINITY);
+        high = vec3(-INFINITY);
+    }
+
+    void include(Triangle * tri)
+    {
+        for(size_t i = 0; i < 3; i++)
+        {
+            low[i] =  min(low[i], tri->a[i]);
+            low[i] =  min(low[i], tri->b[i]);
+            low[i] =  min(low[i], tri->c[i]);
+            high[i] =  max(high[i], tri->a[i]);
+            high[i] =  max(high[i], tri->b[i]);
+            high[i] =  max(high[i], tri->c[i]);
+        }
+    }
+
+    void include(BBox & box)
+    {
+        for(size_t i = 0; i < 3; i++)
+        {
+            low[i] =  min(low[i], box.low[i]);
+            high[i] =  max(high[i], box.high[i]);
+        }
+    }
+
+    double midpoint(unsigned char axis) const {
+        return (low[axis] + high[axis]) * 0.5;
+    }
+
+    bool intersects(Ray & ray, double & min_t, double & max_t) const {
+        double tmin, tmax;
+
+        vec3 invDir = 1.f / ray.dir;
+
+        tmin = (low.x - ray.origin.x) * invDir.x;
+        tmax = (high.x - ray.origin.x) * invDir.x;
+
+        if (tmin > tmax)
+            swap(tmin, tmax);
+
+        double tymin, tymax;
+
+        tymin = (low.y - ray.origin.y) * invDir.y;
+        tymax = (high.y - ray.origin.y) * invDir.y;
+
+        if (tymin > tymax)
+            swap(tymin, tymax);
+
+        if ((tmax < tymin) || (tmin > tymax))
+            return false;
+        
+
+        if (tymax < tmax)
+            tmax = tymax;
+        
+        if (tmin < tymin)
+            tmin = tymin;
+
+        double tzmin, tzmax;
+
+        tzmin = (low.z - ray.origin.z) * invDir.z;
+        tzmax = (high.z - ray.origin.z) * invDir.z;
+         
+
+        if (tzmin > tzmax)
+            swap(tzmin, tzmax);
+
+        if ((tmax < tzmin) || (tmin > tzmax))
+            return false;
+
+        if (tzmax < tmax)
+            tmax = tzmax;
+        
+        if (tmin < tzmin)
+            tmin = tzmin;
+
+        min_t = tmin;
+        max_t = tmax;
+        return true;
+    }
+
+    vec3 low;
+    vec3 high;
+    size_t id;
+};
+
+
+struct Node {
+    char axis; //0 - x, 1 - y, 2 - z, 3 - leaf
+    union {
+        Node * left;
+        Triangle * tri;
+    };
+};
+
+struct InternalNode: public Node {
+
+    ~InternalNode() {
+        delete left;
+        delete right;
+    }
+
+    BBox box;
+    Node * right;
+};
+
+
+struct NodeStack {
+    Node * node;
+    double tmin;
+    double tmax;
+};
+
+
+class SceneWithSDS : public Scene {
+public:
+    SceneWithSDS(const char *pathToScenes, const char *pathToOBJ)
+    : Scene(pathToScenes, pathToOBJ)
+    {
+        //build spatial data structure
+        boxes = new BBox[triangles.size()];
+        BBox rootBox;
+
+
+        for(size_t i = 0; i < triangles.size(); ++i) {
+            boxes[i].include(triangles[i]);
+            rootBox.include(boxes[i]);
+        }
+
+
+        root = (InternalNode *) recursiveBuild(rootBox, 0, triangles.size(), 0, 0);
+
+        delete [] boxes;
+    }
+
+    ~SceneWithSDS() {
+        delete root;
+    }
+
+    Node * recursiveBuild(BBox & parentBox, size_t from, size_t to, char axis, size_t depth) {
+        //leaf
+        if (from == to - 1) {
+            Node * node = new Node();
+            node->axis = 3; //because 3 is leaf
+            node->tri = triangles[from];
+            return node;
+        }
+
+        //2 nodes
+        if (from == to - 2) {
+            InternalNode * node = new InternalNode();
+            node->axis = axis;
+            node->box = parentBox;
+
+            if(boxes[from].midpoint(axis) < boxes[from + 1].midpoint(axis)) {
+                node->left = recursiveBuild(boxes[from], from, from + 1, 3, depth + 1);
+                node->right = recursiveBuild(boxes[from], from + 1, to, 3, depth + 1);
+            } else {
+                node->right = recursiveBuild(boxes[from], from + 1, to, 3, depth + 1);
+                node->left = recursiveBuild(boxes[from], from, from + 1, 3, depth + 1);
+            }
+        }
+
+
+        //general case
+
+        InternalNode * node = new InternalNode();
+        node->axis = axis;
+        node->box = parentBox;
+
+        // L/R clasification
+        double midpoint = parentBox.midpoint(axis);
+        double triangleMid;
+        BBox left, right;
+        size_t firstRight = from;
+
+
+        for (size_t i = from; i < to; i++)
+        {
+            triangleMid = boxes[i].midpoint(axis);
+
+            if (triangleMid >= midpoint) {
+                right.include(boxes[i]);
+            } else {
+                left.include(boxes[i]);
+                swap(triangles[i], triangles[firstRight]);
+                swap(boxes[i], boxes[firstRight]);
+                ++firstRight;
+            }
+        }
+
+        //maybe?
+        if (from == firstRight || to == firstRight) {
+            left.reset();
+            right.reset();
+
+            double minTriangleMid = INFINITY;
+
+            for (size_t i = from; i < to; i++)
+            {
+                triangleMid = boxes[i].midpoint(axis);
+
+                if (triangleMid < minTriangleMid) {
+                    minTriangleMid = triangleMid;
+                    swap(triangles[i], triangles[from]);
+                    swap(boxes[i], boxes[from]);
+                }
+            }
+
+            left.include(boxes[from]);
+            firstRight = from + 1;
+
+            for (size_t i = firstRight; i < to; i++)
+            {
+                right.include(boxes[i]);
+            }
+        }
+
+        axis = (axis + 1) % 3;
+        node->left = recursiveBuild(left, from, firstRight, axis, depth + 1);
+        node->right = recursiveBuild(left, firstRight, to, axis, depth + 1);
+
+        return node;
+    }
+
+    virtual Triangle * findNearest(Ray & ray, bool inside) {
+        //tranvezace spatial data structure
+        NodeStack stack[10000];
+        size_t stackIndex = 1;
+
+        double tmin = INFINITY, tmax = 0;
+        float b1, b2, t;
+
+        Triangle * nearest = nullptr;
+        ray.t = INFINITY;
+
+        if (root != nullptr || !root->box.intersects(ray, tmin, tmax))
+            return nullptr;
+
+
+        Node * node = root;
+        stack[0].node = root;
+        stack[0].tmin = tmin;
+        stack[0].tmax = tmax;
+
+        while(stackIndex > 0) {
+            
+            while(node) {
+
+                if (node->axis == 3) // leaf 
+                {
+                    t = node->tri->intersect(ray, inside, b1, b2);
+
+                    if ((t != INFINITY && t < ray.t) && t > epsilon)
+                    {
+                        nearest = node->tri;
+                        ray.t = t;
+                        ray.b1 = b1;
+                        ray.b2 = b2;
+                    }
+
+                    break;
+
+                } else {
+                    if (((InternalNode *)node)->box.intersects(ray, tmin, tmax)) {
+                        Node * near, * far;
+
+                        if (ray.dir[node->axis] > 0) {
+                            near = ((InternalNode *)node)->left;
+                            far = ((InternalNode *)node)->right;
+                        } else {
+                            near = ((InternalNode *)node)->right;
+                            far = ((InternalNode *)node)->left;
+                        }
+
+                        stack[stackIndex].node = far;
+                        stack[stackIndex].tmin = tmin;
+                        stack[stackIndex].tmax = tmax;
+                        stackIndex++;
+
+                        node = near;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+
+            //stack pop
+            //TODO explain pop from local stack in connection with tmin and best t
+            /*stackIndex--;
+            tmin = stack[stackIndex].tmin;
+            tmax = stack[stackIndex].tmax;
+            node = stack[stackIndex].node;
+
+            if (tmin > ray.t) {
+                while(stackIndex > 0) {
+                    stackIndex--;
+                    tmin = stack[stackIndex].tmin;
+
+                    if(tmin < ray.t)
+                        break;
+                }
+
+                //TODO
+            }*/
+        }
+           
+        return nullptr;
+    }
+
+
+
+
+
+
+
+protected:
+    InternalNode * root;
+    BBox * boxes;
+
+
+};
+
+
+
+
+
+
+
+
+
+
+
 
 
 void saveImage(float *image, size_t width, size_t height)
@@ -465,7 +813,7 @@ int main(int argc, char const *argv[])
 
     Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
     //Camera camera(vec3(0, 1, 4.42), vec3(0, 1, 0), vec3(0, 0, -1), 0.6);
-    Scene scene("./scenes", "./scenes/CornellBox-Original.obj");
+    SceneWithSDS scene("./scenes", "./scenes/CornellBox-Original.obj");
     //Scene scene("./scenes", "./scenes/CornellBox-Sphere.obj");
 
     double maxt = 0;
