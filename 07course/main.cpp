@@ -13,8 +13,8 @@
 
 using namespace std;
 
-//const double epsilon = 1e-5; // Small value
-const double epsilon = 1e-1; // Small value
+const double epsilon = 1e-5; // Small value
+//const double epsilon = 1e-1; // Small value
 
 struct vec3
 {
@@ -613,11 +613,12 @@ public:
 
             if(boxes[from].midpoint(axis) < boxes[from + 1].midpoint(axis)) {
                 node->left = recursiveBuild(boxes[from], from, from + 1, 3, depth + 1);
-                node->right = recursiveBuild(boxes[from], from + 1, to, 3, depth + 1);
+                node->right = recursiveBuild(boxes[from + 1], from + 1, to, 3, depth + 1);
             } else {
-                node->right = recursiveBuild(boxes[from], from + 1, to, 3, depth + 1);
-                node->left = recursiveBuild(boxes[from], from, from + 1, 3, depth + 1);
+                node->left = recursiveBuild(boxes[from + 1], from + 1, to, 3, depth + 1);
+                node->right = recursiveBuild(boxes[from], from, from + 1, 3, depth + 1);
             }
+            return node;
         }
 
 
@@ -677,11 +678,12 @@ public:
 
         axis = (axis + 1) % 3;
         node->left = recursiveBuild(left, from, firstRight, axis, depth + 1);
-        node->right = recursiveBuild(left, firstRight, to, axis, depth + 1);
+        node->right = recursiveBuild(right, firstRight, to, axis, depth + 1);
 
         return node;
     }
 
+    
     virtual Triangle * findNearest(Ray & ray, bool inside) {
         //tranvezace spatial data structure
         NodeStack stack[10000];
@@ -693,7 +695,7 @@ public:
         Triangle * nearest = nullptr;
         ray.t = INFINITY;
 
-        if (root != nullptr || !root->box.intersects(ray, tmin, tmax))
+        if (root == nullptr || !root->box.intersects(ray, tmin, tmax))
             return nullptr;
 
 
@@ -746,33 +748,29 @@ public:
 
 
             //stack pop
-            //TODO explain pop from local stack in connection with tmin and best t
-            /*stackIndex--;
+            stackIndex--;
             tmin = stack[stackIndex].tmin;
             tmax = stack[stackIndex].tmax;
             node = stack[stackIndex].node;
 
-            if (tmin > ray.t) {
-                while(stackIndex > 0) {
-                    stackIndex--;
-                    tmin = stack[stackIndex].tmin;
+            if (nearest != nullptr) {
+                if (ray.t < tmin) {
+                    while(stackIndex > 0) {
+                        stackIndex--;
+                        tmin = stack[stackIndex].tmin;
 
-                    if(tmin < ray.t)
-                        break;
+                        if(tmin < ray.t)
+                            break;
+                    }
+
+                    tmax = stack[stackIndex].tmax;
+                    node = stack[stackIndex].node;
                 }
-
-                //TODO
-            }*/
+            }
         }
            
-        return nullptr;
+        return nearest;
     }
-
-
-
-
-
-
 
 protected:
     InternalNode * root;
@@ -780,17 +778,6 @@ protected:
 
 
 };
-
-
-
-
-
-
-
-
-
-
-
 
 
 void saveImage(float *image, size_t width, size_t height)
@@ -811,12 +798,12 @@ int main(int argc, char const *argv[])
     float *image = new float[WIDTH * HEIGHT * 3];
 
 
-    Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
-    //Camera camera(vec3(0, 1, 4.42), vec3(0, 1, 0), vec3(0, 0, -1), 0.6);
-    SceneWithSDS scene("./scenes", "./scenes/CornellBox-Original.obj");
-    //Scene scene("./scenes", "./scenes/CornellBox-Sphere.obj");
-
-    double maxt = 0;
+    //Camera camera(vec3(278, 273, -1000), vec3(0, 1, 0), vec3(0, 0, 1), 0.6);
+    Camera camera(vec3(0, 1, 4.42), vec3(0, 1, 0), vec3(0, 0, -1), 0.6);
+    //Scene scene("./scenes", "./scenes/CornellBox-Original.obj");
+    //SceneWithSDS scene("./scenes", "./scenes/CornellBox-Original.obj");
+    Scene scene("./scenes", "./scenes/CornellBox-Sphere.obj");
+    //SceneWithSDS scene("./scenes", "./scenes/CornellBox-Sphere.obj");
 
     for (int j = 0; j < HEIGHT; ++j)
         for (int i = 0; i < WIDTH; ++i)
