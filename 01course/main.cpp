@@ -165,7 +165,7 @@ int main(int argc, char const *argv[])
         //do obrazku zapis hloubku
         if (sphere != nullptr) {
           for(int k = 0; k < 3; ++k)
-            image[(j * WIDTH + i) * 3 + k] = 255;//clamp(r.t, 0.0, 255.0);
+            image[(j * WIDTH + i) * 3 + k] = 255 - clamp(r.t * 10, 0.0, 255.0);
         }
       }
 
